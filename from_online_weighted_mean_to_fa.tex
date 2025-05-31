@@ -1,0 +1,155 @@
+\documentclass[a4paper]{article}
+
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[colorinlistoftodos]{todonotes}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+
+\title{From Weighted Mean to FlashAttention}
+
+\author{liuzhenhai93@outlook.com}
+
+\date{\today}
+
+\begin{document}
+    \maketitle
+
+    In this note, self-attention is approached from the view of weighted mean. Then from this insight, flash attention and ring attention are deciphered in a unified way.
+
+    \section{The Self-Attention}
+    \par
+    The computation of self attention in it's simplest form can be described as: \newline
+    \begin{equation}
+        O = softmax(QK^T)V
+    \end{equation}
+    which can be further factorized to 3 stage: \newline
+    \begin{align}
+        S &= QK^T \\
+        P &= softmax(S) \\
+        O &= PV
+    \end{align}
+    For the convenience of subsequent discussions, two extra matrices are defines beforehand.
+    \newline
+    \begin{align}
+        & W = exp(S) = P* rowsum(P) \\
+        & W_{safe} = exp(S-rowmax(S)) = W * exp(-rowmax(S))
+    \end{align}
+
+
+    \section{Weighted Mean}
+
+    Formally, the weighted mean of a non-empty finite tuple of data $(x_1, x_2, \cdots, x_n)$, with the corresponding non-negative weights $(w_1, w_2, \cdots, w_n)$ is \newline
+
+    \begin{equation}
+        \bar{x} = \frac{\sum_{1}^{n} w_k*x_k}{\sum_{1}^{n}w_{k}}
+    \end{equation}
+
+    \subsection{Online Weighted Mean}
+    Weighted mean can be calculated in a streaming way, with the data and weight feed one by one (or block by block).  And there are two algorithms (\ref{wm1}, \ref{wm2}).
+
+
+
+
+    \section{Weighted Mean and Self-Attention}
+
+    \par
+    Since the sum of each row of $P$ is 1. Each row of $O$ can be considered as a weighted mean of the rows of $V$, with the corresponding row of P as weights.
+    \newline
+    \par
+    Mathematically,  If the weights are scaled by a common factor, the weighted mean remains the same. Hence,
+    each row of $O$ can also be considered as a weighted mean of the rows of $V$, with the corresponding row of $W$ or $W_{safe}$ as weights.
+
+    \section{Flash Attention: Online Weighted Mean}
+
+    With numerical stability taken into consideration, each row of O can be regarded as a weighted mean of the rows of V , with the corresponding row of $W_{safe}$ as weights. Resembling the two algorithms for online weighted mean, there are two algorithms  (\ref{fa1}, \ref{fa2}) for computing $O$, corresponding to flash attention 1 and flash attention 2 respectively.
+
+
+    \section{Ring Attention: Hierarchy Weighted Mean}
+
+    If we define
+
+    \begin{align}
+        \bar{x}_{(i,j)} &= \frac{\sum_{i}^{j} w_k*x_k}{\sum_{i}^{j}w_{k}} \\
+        d_{(i,j)} &= \sum_{i}^{j}w_{k}
+    \end{align}
+    then the global weighted mean can be computed as a weighted mean of two local weighted mean
+    \begin{equation}
+        \bar{x} = \frac{d_{(1,m)}}{d_{(1,n)}} \bar{x}_{(1,m)} + \frac{d_{(m+1,n)}}{d_{(1,n)}}\bar{x}_{(m+1,n)}
+    \end{equation}
+
+    The equation above assumes that the elements are split into two groups. However, it can be extrapolated to any group:
+
+    \begin{equation}
+        \bar{x} = \frac{d_{(1,m_{1})}}{d_{(1,n)}} \bar{x}_{(1,m_{1})} + \frac{d_{(m_{1}+1,m_{2}+1)}}{d_{(1,n)}} \bar{x}_{(m_{1}+1,m_{2}+1)} +\dots + \frac{d_{(m_{k}+1,n)}}{d_{(1,n)}} \bar{x}_{(m_{k}+1,n)}
+    \end{equation}
+
+    This is the mathematics behind ring attention: V are split into blocks; each block attention results in a partial result, and the final result is a weighted mean of the partial results.
+
+    \begin{algorithm}
+        \caption{one pass weighted mean 1}
+        \label{wm1}
+        \begin{algorithmic}[1]
+            \State $\bar{x}_{0}$ = $0$
+            \State $d_0 = 0$
+            \For {$i=1,2,\ldots,N$}
+                \State $d_{i}$ = $d_{i-1}$ + $w_{i}$
+                \State $\bar{x}_{i} = \frac{d_{i-1}}{ d_{i}} \bar{x}_{i-1}   + \frac{w_i}{d_i}x_i$
+            \EndFor
+            \State $\bar{x}$ = $\bar{x}_{N}$
+        \end{algorithmic}
+    \end{algorithm}
+
+
+    \begin{algorithm}
+        \caption{one pass weighted mean 2}
+        \label{wm2}
+        \begin{algorithmic}[1]
+            \State $\bar{x}_{0}$ = $0$
+            \State $d_0 = 0$
+            \For {$i=1,2,\ldots,N$}
+                \State $d_{i} = d_{i-1} + w_{i}$
+                \State $\bar{x}_{i} = \bar{x}_{i-1}+w_{i}x_i$
+            \EndFor
+            \State $\bar{x} = \frac{\bar{x}_{N}}{d_N}$
+        \end{algorithmic}
+    \end{algorithm}
+
+    \begin{algorithm}
+        \caption{flash attention 1}
+        \label{fa1}
+        \begin{algorithmic}[1]
+            \State $m_0 = -\infty$
+            \State $d^\prime_0 = 0 $
+            \State $o^\prime_{0}$ = row vector  of 0
+            \For {$i=1,2,\ldots,N$}
+                \State $x_{i} = Q[k,:]K^T[:,i] $
+                \State $m_{i} =  max(m_{i-1}, x_{i})$
+                \State $d^{\prime}_i = d^{\prime}_{i-1} e^{m_{i-1}-m_{i}} + e^{x_i - m_i}$
+                \State $o^\prime_{i} = \frac{d^{\prime}_{i-1}e^{m_{i-1}-m_{i}}}{d^{\prime}_{i}} o^\prime_{i-1} + \frac{e^{x_i-m_i}}{d^{\prime}_{i}}V[i,:]$
+            \EndFor
+            \State $O[k,:] = o^\prime_{N}$
+        \end{algorithmic}
+    \end{algorithm}
+
+    \begin{algorithm}
+        \caption{flash attention 2}
+        \label{fa2}
+        \begin{algorithmic}[1]
+            \State $m_0 = -\infty$
+            \State $d^\prime_0 = 0 $
+            \State $o^\prime_{0}$ = row vector  of 0
+            \For {$i=1,2,\ldots,N$}
+                \State $x_{i} = Q[k,:]K^T[:,i] $
+                \State $m_{i} =  max(m_{i-1}, x_{i})$
+                \State $d^{\prime}_i = d^{\prime}_{i-1} e^{m_{i-1}-m_{i}} + e^{x_i - m_i}$
+                \State $o^\prime_{i} = o^\prime_{i-1} + e^{x_i-m_i}V[i:]$
+            \EndFor
+            \State $O[k,:] =  \frac{o^\prime_{N}}{d^{\prime}_{N}}$
+        \end{algorithmic}
+    \end{algorithm}
+
+\end{document}
+
