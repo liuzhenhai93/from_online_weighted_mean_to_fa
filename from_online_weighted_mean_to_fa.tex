@@ -34,7 +34,7 @@
     For the convenience of subsequent discussions, two extra matrices are defines beforehand.
     \newline
     \begin{align}
-        & W = exp(S) = P* rowsum(P) \\
+        & W = exp(S) = P* rowsum(S) \\
         & W_{safe} = exp(S-rowmax(S)) = W * exp(-rowmax(S))
     \end{align}
 
@@ -80,13 +80,13 @@
         \bar{x} = \frac{d_{(1,m)}}{d_{(1,n)}} \bar{x}_{(1,m)} + \frac{d_{(m+1,n)}}{d_{(1,n)}}\bar{x}_{(m+1,n)}
     \end{equation}
 
-    The equation above assumes that the elements are split into two groups. However, it can be extrapolated to any group:
+    The equation above assumes that the elements are split into two groups. However, it can be extrapolated to any group, the global weighted mean is a weighted mean of local weighted mean:
 
     \begin{equation}
         \bar{x} = \frac{d_{(1,m_{1})}}{d_{(1,n)}} \bar{x}_{(1,m_{1})} + \frac{d_{(m_{1}+1,m_{2}+1)}}{d_{(1,n)}} \bar{x}_{(m_{1}+1,m_{2}+1)} +\dots + \frac{d_{(m_{k}+1,n)}}{d_{(1,n)}} \bar{x}_{(m_{k}+1,n)}
     \end{equation}
 
-    This is the mathematics behind ring attention: V are split into blocks; each block attention results in a partial result, and the final result is a weighted mean of the partial results.
+    This is the mathematics behind ring attention: $K$ and $V$ are split into blocks; each block attention results in a partial result, and the final result is a weighted mean of the partial results.
 
     \begin{algorithm}
         \caption{one pass weighted mean 1}
@@ -145,7 +145,7 @@
                 \State $x_{i} = Q[k,:]K^T[:,i] $
                 \State $m_{i} =  max(m_{i-1}, x_{i})$
                 \State $d^{\prime}_i = d^{\prime}_{i-1} e^{m_{i-1}-m_{i}} + e^{x_i - m_i}$
-                \State $o^\prime_{i} = o^\prime_{i-1} + e^{x_i-m_i}V[i:]$
+                \State $o^\prime_{i} = o^\prime_{i-1}e^{m_{i-1}-m_{i}} + e^{x_i-m_i}V[i:]$
             \EndFor
             \State $O[k,:] =  \frac{o^\prime_{N}}{d^{\prime}_{N}}$
         \end{algorithmic}
